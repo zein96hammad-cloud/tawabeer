@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ========== Users ==========
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if false; // لا يحذف المستخدمون أنفسهم من القواعد
+    }
+
+    // ========== Clinics (Tenant Isolation) ==========
+    match /clinics/{clinicId} {
+      // أي زائر يمكنه قراءة العيادات (للدليل العام)
+      allow read: if true;
+
+      // إنشاء عيادة: فقط المستخدم المسجّل، ويجب أن يكون ownerUid = uid الخاص به
+      allow create: if request.auth != null
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.keys().hasAll(['clinicName', 'doctorName', 'specialty', 'city', 'ownerUid', 'slug', 'isOpen', 'createdAt']);
+
+      // تعديل / حذف: فقط مالك العيادة
+      allow update, delete: if request.auth != null
+                            && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // ========== Bookings (معزولة بـ clinicId) ==========
+    match /bookings/{bookingId} {
+      // القراءة: المالك أو المريض صاحب الحجز
+      allow read: if request.auth != null && (
+        // صاحب العيادة يرى حجوزات عيادته
+        get(/databases/$(database)/documents/clinics/$(resource.data.clinicId)).data.ownerUid == request.auth.uid
+        ||
+        // المريض يرى حجوزاته فقط
+        resource.data.patientUid == request.auth.uid
+      );
+
+      // إنشاء حجز: أي مستخدم مسجّل (مريض)
+      allow create: if request.auth != null
+                    && request.resource.data.patientUid == request.auth.uid
+                    && request.resource.data.keys().hasAll(['clinicId', 'patientUid', 'patientName', 'type', 'status', 'createdAt']);
+
+      // تحديث الحالة: فقط صاحب العيادة (استدعاء مريض، إنهاء جلسة...)
+      allow update: if request.auth != null
+                    && get(/databases/$(database)/documents/clinics/$(resource.data.clinicId)).data.ownerUid == request.auth.uid;
+
+      allow delete: if request.auth != null
+                    && (resource.data.patientUid == request.auth.uid
+                        || get(/databases/$(database)/documents/clinics/$(resource.data.clinicId)).data.ownerUid == request.auth.uid);
+    }
+
+    // ========== Reviews (تقييمات عامة) ==========
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if request.auth != null
+                    && request.resource.data.keys().hasAll(['authorName', 'stars', 'comment', 'createdAt']);
+      allow update, delete: if false;
+    }
+  }
+}
